@@ -34,6 +34,7 @@ import {
   joinUrlSegments,
   lookupFile,
   normalizePath,
+  requireResolveFromRootWithFallback,
 } from './utils'
 import { manifestPlugin } from './plugins/manifest'
 import type { Logger } from './logger'
@@ -75,6 +76,7 @@ export interface BuildOptions {
    *
    * For custom targets, see https://esbuild.github.io/api/#target and
    * https://esbuild.github.io/content-types/#javascript for more details.
+   * @default 'modules'
    */
   target?: 'modules' | TransformOptions['target'] | false
   /**
@@ -122,8 +124,15 @@ export interface BuildOptions {
    * a niche browser that comes with most modern JavaScript features
    * but has poor CSS support, e.g. Android WeChat WebView, which
    * doesn't support the #RGBA syntax.
+   * @default target
    */
   cssTarget?: TransformOptions['target'] | false
+  /**
+   * Override CSS minification specifically instead of defaulting to `build.minify`,
+   * so you can configure minification for JS and CSS separately.
+   * @default minify
+   */
+  cssMinify?: boolean
   /**
    * If `true`, a separate sourcemap file will be created. If 'inline', the
    * sourcemap will be appended to the resulting output file as data URI.
@@ -145,7 +154,7 @@ export interface BuildOptions {
   terserOptions?: Terser.MinifyOptions
   /**
    * Will be merged with internal rollup options.
-   * https://rollupjs.org/guide/en/#big-list-of-options
+   * https://rollupjs.org/configuration-options/
    */
   rollupOptions?: RollupOptions
   /**
@@ -196,21 +205,31 @@ export interface BuildOptions {
    * Build in library mode. The value should be the global name of the lib in
    * UMD mode. This will produce esm + cjs + umd bundle formats with default
    * configurations that are suitable for distributing libraries.
+   * @default false
    */
   lib?: LibraryOptions | false
   /**
    * Produce SSR oriented build. Note this requires specifying SSR entry via
    * `rollupOptions.input`.
+   * @default false
    */
   ssr?: boolean | string
   /**
    * Generate SSR manifest for determining style links and asset preload
    * directives in production.
+   * @default false
    */
   ssrManifest?: boolean | string
   /**
+   * Emit assets during SSR.
+   * @experimental
+   * @default false
+   */
+  ssrEmitAssets?: boolean
+  /**
    * Set to false to disable reporting compressed chunk sizes.
    * Can slightly improve build speed.
+   * @default true
    */
   reportCompressedSize?: boolean
   /**
@@ -220,7 +239,8 @@ export interface BuildOptions {
   chunkSizeWarningLimit?: number
   /**
    * Rollup watch options
-   * https://rollupjs.org/guide/en/#watchoptions
+   * https://rollupjs.org/configuration-options/#watch
+   * @default null
    */
   watch?: WatcherOptions | null
 }
@@ -285,6 +305,7 @@ export interface ResolvedBuildOptions
 export function resolveBuildOptions(
   raw: BuildOptions | undefined,
   logger: Logger,
+  root: string,
 ): ResolvedBuildOptions {
   const deprecatedPolyfillModulePreload = raw?.polyfillModulePreload
   if (raw) {
@@ -324,6 +345,7 @@ export function resolveBuildOptions(
     lib: false,
     ssr: false,
     ssrManifest: false,
+    ssrEmitAssets: false,
     reportCompressedSize: true,
     chunkSizeWarningLimit: 500,
     watch: null,
@@ -364,8 +386,20 @@ export function resolveBuildOptions(
   if (resolved.target === 'modules') {
     resolved.target = ESBUILD_MODULES_TARGET
   } else if (resolved.target === 'esnext' && resolved.minify === 'terser') {
-    // esnext + terser: limit to es2021 so it can be minified by terser
-    resolved.target = 'es2021'
+    try {
+      const terserPackageJsonPath = requireResolveFromRootWithFallback(
+        root,
+        'terser/package.json',
+      )
+      const terserPackageJson = JSON.parse(
+        fs.readFileSync(terserPackageJsonPath, 'utf-8'),
+      )
+      const v = terserPackageJson.version.split('.')
+      if (v[0] === '5' && v[1] < 16) {
+        // esnext + terser 5.16<: limit to es2021 so it can be minified by terser
+        resolved.target = 'es2021'
+      }
+    } catch {}
   }
 
   if (!resolved.cssTarget) {
@@ -379,6 +413,10 @@ export function resolveBuildOptions(
 
   if (resolved.minify === true) {
     resolved.minify = 'esbuild'
+  }
+
+  if (resolved.cssMinify == null) {
+    resolved.cssMinify = !!resolved.minify
   }
 
   return resolved
@@ -645,7 +683,7 @@ export async function build(
     outputBuildError(e)
     throw e
   } finally {
-    if (bundle) bundle.close()
+    if (bundle) await bundle.close()
   }
 }
 
@@ -709,7 +747,7 @@ function getPkgJson(root: string): PackageData['data'] {
 }
 
 function getPkgName(name: string) {
-  return name?.startsWith('@') ? name.split('/')[1] : name
+  return name?.[0] === '@' ? name.split('/')[1] : name
 }
 
 type JsExt = 'js' | 'cjs' | 'mjs'

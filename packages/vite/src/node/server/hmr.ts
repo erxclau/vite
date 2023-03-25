@@ -14,6 +14,8 @@ import type { ModuleNode } from './moduleGraph'
 
 export const debugHmr = createDebugger('vite:hmr')
 
+const whitespaceRE = /\s/
+
 const normalizedClientDir = normalizePath(CLIENT_DIR)
 
 export interface HmrOptions {
@@ -42,6 +44,7 @@ export function getShortName(file: string, root: string): string {
 export async function handleHMRUpdate(
   file: string,
   server: ViteDevServer,
+  configOnly: boolean,
 ): Promise<void> {
   const { ws, config, moduleGraph } = server
   const shortFile = getShortName(file, config.root)
@@ -68,6 +71,10 @@ export async function handleHMRUpdate(
     } catch (e) {
       config.logger.error(colors.red(e))
     }
+    return
+  }
+
+  if (configOnly) {
     return
   }
 
@@ -383,7 +390,7 @@ export function lexAcceptedHmrDeps(
         } else if (char === '`') {
           prevState = state
           state = LexerState.inTemplateString
-        } else if (/\s/.test(char)) {
+        } else if (whitespaceRE.test(char)) {
           continue
         } else {
           if (state === LexerState.inCall) {
@@ -468,7 +475,7 @@ export function lexAcceptedHmrExports(
 }
 
 export function normalizeHmrUrl(url: string): string {
-  if (!url.startsWith('.') && !url.startsWith('/')) {
+  if (url[0] !== '.' && url[0] !== '/') {
     url = wrapId(url)
   }
   return url
